@@ -31,7 +31,15 @@ export interface GameState {
   sequenceIndex: number; // index of currently displayed icon, -1 between icons
   inputRemainingMs: number; // 0..inputWindowMs
   results: PlayerRoundResult[][]; // [round][player]
-  currentInputs: number[][]; // [player] inputs entered in current round
+  currentInputs: number[][]; // [player] inputs entered in current round (solo los aceptados — se detiene al equivocarse)
+  /**
+   * Conteo total de presses por jugador en la ronda actual, INCLUYENDO las
+   * que ocurren después de que el jugador se equivocó (cuando `playerDone`
+   * lo bloquea de seguir avanzando en `currentInputs`). Sirve solo para
+   * feedback visual: el chip se pone verde cuando este conteo llega a
+   * SEQ_LENGTH, independiente de si el jugador acertó o falló.
+   */
+  pressCountsThisRound: number[];
   playerDone: boolean[]; // locked for current round (finished correctly or wrong)
   winner: number | null;
 }
@@ -43,6 +51,7 @@ const randomSequence = () =>
 
 const emptyInputs = () => Array.from({ length: PLAYERS }, () => [] as number[]);
 const emptyDone = () => Array.from({ length: PLAYERS }, () => false);
+const emptyPressCounts = () => Array.from({ length: PLAYERS }, () => 0);
 
 const initialState = (): GameState => ({
   phase: "standby",
@@ -58,6 +67,7 @@ const initialState = (): GameState => ({
     })),
   ),
   currentInputs: emptyInputs(),
+  pressCountsThisRound: emptyPressCounts(),
   playerDone: emptyDone(),
   winner: null,
 });
@@ -74,6 +84,9 @@ export function useGame() {
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const inputStartRef = useRef<number>(0);
+  // Evita agendar finishRound dos veces si llegan más presses después de que
+  // todos los chips ya estaban verdes (durante el delay de 1s de gracia).
+  const finishScheduledRef = useRef(false);
 
   const clearTimers = useCallback(() => {
     timersRef.current.forEach(clearTimeout);
@@ -99,32 +112,64 @@ export function useGame() {
   const startGame = useCallback(() => {
     clearTimers();
     setState((s) => ({ ...s, phase: "instructions" }));
-    schedule(TIMINGS.instructionsMs, () => startCountdown(0));
+    // La transición a countdown la dispara el video de instrucciones cuando
+    // termina (ver InstructionsScreen + onInstructionsEnded). Este schedule
+    // es una red de seguridad: si el video falla en cargar o no dispara
+    // onEnded por cualquier razón, igual avanzamos a los 60s para que el
+    // juego no se quede colgado.
+    schedule(TIMINGS.instructionsMaxMs, () => {
+      if (stateRef.current.phase === "instructions") startCountdown(0);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clearTimers]);
+
+  /** Llamado por InstructionsScreen cuando el video de instrucciones termina. */
+  const onInstructionsEnded = useCallback(() => {
+    if (stateRef.current.phase !== "instructions") return;
+    clearTimers();
+    startCountdown(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clearTimers]);
+
+  /** Llamado por CountdownScreen cuando el video de cuenta regresiva termina. */
+  const onCountdownEnded = useCallback(() => {
+    if (stateRef.current.phase !== "countdown") return;
+    clearTimers();
+    startSequenceDisplay();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clearTimers]);
+
+  /** Llamado por WinnerScreen cuando el video del ganador (playerN.mp4) termina. */
+  const onWinnerEnded = useCallback(() => {
+    if (stateRef.current.phase !== "winner") return;
+    startFinalPhase();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Llamado por FinalScreen cuando el video final (final.mp4) termina. */
+  const onFinalEnded = useCallback(() => {
+    if (stateRef.current.phase !== "final") return;
+    goToStandby();
+  }, [goToStandby]);
 
   const startCountdown = (round: number) => {
     setState((s) => ({
       ...s,
       phase: "countdown",
       round,
-      countdown: 3,
+      countdown: 3, // legacy, ya no se usa visualmente (video reemplazó al texto)
       sequence: randomSequence(),
       currentInputs: emptyInputs(),
+      pressCountsThisRound: emptyPressCounts(),
       playerDone: emptyDone(),
       sequenceIndex: -1,
     }));
-    // 3 -> 2 -> 1 -> GO -> sequence
-    schedule(TIMINGS.countdownStepMs, () =>
-      setState((s) => ({ ...s, countdown: 2 })),
-    );
-    schedule(TIMINGS.countdownStepMs * 2, () =>
-      setState((s) => ({ ...s, countdown: 1 })),
-    );
-    schedule(TIMINGS.countdownStepMs * 3, () =>
-      setState((s) => ({ ...s, countdown: 0 })),
-    );
-    schedule(TIMINGS.countdownStepMs * 4, () => startSequenceDisplay());
+    // La transición a sequence la dispara el video de cuenta regresiva
+    // (ver CountdownScreen + onCountdownEnded). Fallback de seguridad por si
+    // el video falla en cargar o no dispara onEnded.
+    schedule(TIMINGS.countdownMaxMs, () => {
+      if (stateRef.current.phase === "countdown") startSequenceDisplay();
+    });
   };
 
   const startSequenceDisplay = () => {
@@ -143,11 +188,13 @@ export function useGame() {
 
   const startInputPhase = () => {
     inputStartRef.current = performance.now();
+    finishScheduledRef.current = false;
     setState((s) => ({
       ...s,
       phase: "input",
       inputRemainingMs: TIMINGS.inputWindowMs,
       currentInputs: emptyInputs(),
+      pressCountsThisRound: emptyPressCounts(),
       playerDone: emptyDone(),
     }));
 
@@ -197,9 +244,22 @@ export function useGame() {
     const winner = top[Math.floor(Math.random() * top.length)].player;
 
     setState((cs) => ({ ...cs, phase: "winner", winner }));
-    schedule(TIMINGS.winnerMs, () => {
-      setState((cs) => ({ ...cs, phase: "final" }));
-      schedule(TIMINGS.finalMs, () => goToStandby());
+    // La transición a "final" la dispara el video del ganador cuando
+    // termina (ver WinnerScreen + onWinnerEnded). Fallback por si falla.
+    schedule(TIMINGS.winnerMaxMs, () => {
+      if (stateRef.current.phase === "winner") startFinalPhase();
+    });
+  };
+
+  /**
+   * Pasa a la fase "final" y agenda un fallback para volver a standby
+   * por si el video de final falla en disparar onEnded.
+   */
+  const startFinalPhase = () => {
+    clearTimers();
+    setState((cs) => ({ ...cs, phase: "final" }));
+    schedule(TIMINGS.finalMaxMs, () => {
+      if (stateRef.current.phase === "final") goToStandby();
     });
   };
 
@@ -208,7 +268,29 @@ export function useGame() {
   const onPlayerInput = useCallback((playerId: number, partId: number) => {
     const s = stateRef.current;
     if (s.phase !== "input") return;
-    if (s.playerDone[playerId]) return;
+
+    // Si el jugador ya está bloqueado (se equivocó antes) o ya terminó
+    // correctamente, igual contamos el press para el feedback visual del
+    // chip — el chip se pone verde a los 4 presses, independiente de si
+    // los presses entraron a la lógica del juego.
+    if (s.playerDone[playerId]) {
+      setState((cs) => {
+        const newPressCounts = cs.pressCountsThisRound.map((c, i) =>
+          i === playerId ? c + 1 : c,
+        );
+        const allFinishedPressing = newPressCounts.every(
+          (c) => c >= SEQ_LENGTH,
+        );
+        if (allFinishedPressing && !finishScheduledRef.current) {
+          finishScheduledRef.current = true;
+          // 1 segundo de gracia para que el usuario alcance a ver los 5
+          // chips en verde antes de pasar a la siguiente pantalla.
+          schedule(1000, () => finishRound());
+        }
+        return { ...cs, pressCountsThisRound: newPressCounts };
+      });
+      return;
+    }
 
     const inputs = [...s.currentInputs[playerId], partId];
     const expected = s.sequence[inputs.length - 1];
@@ -219,6 +301,9 @@ export function useGame() {
       );
       const newDone = [...cs.playerDone];
       const newResults = cs.results.map((row) => row.slice());
+      const newPressCounts = cs.pressCountsThisRound.map((c, i) =>
+        i === playerId ? c + 1 : c,
+      );
 
       const wrong = partId !== expected;
       const finishedCorrect =
@@ -239,24 +324,47 @@ export function useGame() {
         };
       }
 
-      // If everyone is done, end the round early.
-      const allDone = newDone.every(Boolean);
+      // La ronda termina cuando todos los jugadores presionaron SEQ_LENGTH
+      // veces (chip verde). Antes usábamos `playerDone.every(Boolean)`,
+      // pero eso cierra la ronda en cuanto el último jugador en pendiente
+      // se equivoca en su primer press (porque `playerDone` se marca true
+      // tanto al fallar como al completar). Resultado: el jugador no
+      // alcanzaba a meter sus 4 inputs si los demás ya estaban listos.
+      const allFinishedPressing = newPressCounts.every(
+        (c) => c >= SEQ_LENGTH,
+      );
       const next = {
         ...cs,
         currentInputs: newInputs,
+        pressCountsThisRound: newPressCounts,
         playerDone: newDone,
         results: newResults,
       };
-      if (allDone) {
-        // schedule round finish on next tick so React can flush state first
-        queueMicrotask(() => finishRound());
+      if (allFinishedPressing && !finishScheduledRef.current) {
+        finishScheduledRef.current = true;
+        // 1 segundo de gracia para que el usuario alcance a ver los 5
+        // chips en verde antes de pasar a la siguiente pantalla.
+        schedule(1000, () => finishRound());
       }
       return next;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** Tech (encargado) control. Single press in standby = start. Double press = reset to standby. */
+  /**
+   * Tech (encargado) control — botón SPACE/ENTER del Arduino del encargado,
+   * el botón "Tech" de la UI dev, o el botón JUGAR del standby.
+   *
+   * - Doble press (<500ms) en CUALQUIER fase: reset a standby.
+   * - Press único: skip universal — avanza a la siguiente fase del FSM.
+   *   - standby      → arranca el juego (instrucciones).
+   *   - instructions → salta el video, va a countdown.
+   *   - countdown    → salta el video, va a sequence.
+   *   - sequence     → salta la randomización, va a input.
+   *   - input        → termina la ronda (avanza a la siguiente o a winner).
+   *   - winner       → salta al final.
+   *   - final        → salta al standby.
+   */
   const lastTechPressRef = useRef<number>(0);
   const onTechInput = useCallback(() => {
     const now = performance.now();
@@ -268,11 +376,42 @@ export function useGame() {
       return;
     }
     const s = stateRef.current;
-    if (s.phase === "standby") {
-      startGame();
+    switch (s.phase) {
+      case "standby":
+        startGame();
+        break;
+      case "instructions":
+        onInstructionsEnded();
+        break;
+      case "countdown":
+        onCountdownEnded();
+        break;
+      case "sequence":
+        clearTimers();
+        startInputPhase();
+        break;
+      case "input":
+        // finishRound() internamente decide si va a la siguiente ronda o a
+        // winner (si era la última). Limpia timers y intervals.
+        finishRound();
+        break;
+      case "winner":
+        onWinnerEnded();
+        break;
+      case "final":
+        onFinalEnded();
+        break;
     }
-    // Otherwise: single press during a round is ignored. Reset is double-press.
-  }, [goToStandby, startGame]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    goToStandby,
+    startGame,
+    onInstructionsEnded,
+    onCountdownEnded,
+    onWinnerEnded,
+    onFinalEnded,
+    clearTimers,
+  ]);
 
   /* ---------------- expose to window for Arduino bridge ---------------- */
 
@@ -289,5 +428,13 @@ export function useGame() {
     return () => clearTimers();
   }, [clearTimers]);
 
-  return { state, onPlayerInput, onTechInput };
+  return {
+    state,
+    onPlayerInput,
+    onTechInput,
+    onInstructionsEnded,
+    onCountdownEnded,
+    onWinnerEnded,
+    onFinalEnded,
+  };
 }

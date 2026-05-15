@@ -44,7 +44,7 @@ export function SerialConnectButton({ onPlayerInput, onTechInput }: Props) {
 export function KeyLegend() {
   return (
     <div className="text-[10px] text-white/40 leading-tight font-mono whitespace-pre">
-      {`P1: 1 2 3 4    P3: A S D F
+      {`P1: 1 2 3 4    P3: A S D F    P5: U I O P
 P2: Q W E R    P4: Z X C V
 Tech: SPACE`}
     </div>

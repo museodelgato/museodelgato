@@ -82,7 +82,7 @@ void setup() {
 
 void loop() {
   // Verificar botones (la reproducción es inmediata)
-  checkButton(BTN_Q, ' r', 0, LED_Q, 1);
+  checkButton(BTN_Q, 'r', 0, LED_Q, 1);
   checkButton(BTN_W, 'w', 1, LED_W, 2);
   checkButton(BTN_E, 'e', 2, LED_E, 3);
   checkButton(BTN_R, 'r', 3, LED_R, 4);

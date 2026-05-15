@@ -277,22 +277,23 @@ export function InputScreen({ state }: { state: GameState }) {
         {(state.inputRemainingMs / 1000).toFixed(1)}s
       </div>
 
-      <div className="flex gap-5 mt-2">
+      {/* Chips de los 5 jugadores distribuidos a lo ancho de la pantalla,
+          alineados arriba de los pads físicos / panel de cada jugador.
+          - Azul claro (sky-300) por default = "esperando presses".
+          - Verde (emerald) cuando llegó a SEQ_LENGTH presses = "ya terminó".
+          - Sin filtrar si acertó o falló — eso se ve al final con el ganador.
+          - `transition-colors` para el cambio suave de azul → verde. */}
+      <div className="flex justify-around items-center w-full px-12 mt-2">
         {state.pressCountsThisRound.map((count, i) => {
-          // El chip se pone verde cuando el jugador ya presionó 4 teclas
-          // (`pressCountsThisRound` cuenta TODOS los presses, incluso los
-          // que ocurren después de haberse equivocado y quedar bloqueado
-          // en `currentInputs`). Es indicador puro de "ya hice mis 4 inputs",
-          // sin filtrar si acertó. La revelación de quién ganó es al final.
           const completed = count >= SEQ_LENGTH;
           return (
             <div
               key={i}
-              className={`px-6 py-3 rounded-full text-xl font-bold text-black ${
-                completed ? "bg-emerald-500/60" : "bg-white/40"
+              className={`px-8 py-3 rounded-full text-xl font-bold text-black transition-colors ${
+                completed ? "bg-emerald-500/80" : "bg-sky-300/80"
               }`}
             >
-              P{i + 1} {completed ? "✓" : "..."}
+              Jugador {i + 1}
             </div>
           );
         })}

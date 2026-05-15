@@ -10,6 +10,7 @@ import { useEffect } from "react";
  *   Q W E R    -> P2
  *   A S D F    -> P3
  *   Z X C V    -> P4
+ *   U I O P    -> P5  (provisional, mientras llegan los pads físicos)
  *
  *   SPACE / ENTER -> Tech (encargado)
  *
@@ -34,6 +35,10 @@ export const KEY_MAP: Record<string, { player: number; part: number }> = {
   x: { player: 3, part: 1 },
   c: { player: 3, part: 2 },
   v: { player: 3, part: 3 },
+  u: { player: 4, part: 0 },
+  i: { player: 4, part: 1 },
+  o: { player: 4, part: 2 },
+  p: { player: 4, part: 3 },
 };
 
 export function useKeyboardInput(

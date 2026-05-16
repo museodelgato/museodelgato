@@ -7,3 +7,6 @@ next-env.d.ts
 .DS_Store
 .claude/
 CLAUDE.md
+ASSETS.md
+arduino/README.md
+arduino/SPECS_KIOSKO.md
